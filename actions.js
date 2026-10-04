@@ -7,6 +7,18 @@ import { CONFIG, STATE, THEME_KEY } from './state.js';
 import { API, setCharBindings, charSetAuxWorlds } from './api.js';
 import { UI } from './ui.js';
 import { logger } from './logger.js';
+import {
+    MAX_TAGS_PER_ENTRY,
+    normalizeTagName,
+    addEntryTags,
+    removeEntryTag as removeTagFromEntryObject,
+    replaceEntryTag,
+    countEntryTags,
+    countUntaggedEntries,
+    getEntryTags,
+    buildEntrySearchText,
+    buildEntryTagSearchText
+} from './tags.js';
 
 export const Actions = {
     async flushPendingSave() {
@@ -148,7 +160,12 @@ export const Actions = {
     async loadBook(name) {
         if (!name) return;
         await this.flushPendingSave();
+        const isBookChanged = STATE.currentBookName !== name;
         STATE.currentBookName = name;
+        // 换了世界书就重置标签筛选，避免把上一本书的筛选条件带过来（导致「空列表且看不到原因」）
+        if (isBookChanged) {
+            STATE.entryTagFilter = { tags: [], mode: STATE.entryTagFilter?.mode === 'all' ? 'all' : 'any' };
+        }
 
         try {
             const loadedEntries = await API.loadBook(name);
@@ -183,18 +200,15 @@ export const Actions = {
         UI.updateCardStatus && UI.updateCardStatus(uid);
         UI.renderGlobalStats();
 
-        // 更新搜索文本缓存
+        // 更新搜索文本缓存（含标签）
         const card = document.querySelector(`.wb-card[data-uid="${uid}"]`);
         if (card) {
-            const comment = entry.comment || '';
-            const content = entry.content || '';
-            card.dataset.searchText = `${comment} ${content}`.toLowerCase();
+            card.dataset.searchText = buildEntrySearchText(entry);
+            card.dataset.tagList = buildEntryTagSearchText(entry);
             // 如果当前有搜索词，重新验证显隐状态
             const searchInput = document.getElementById('wb-search-entry');
             if (searchInput && searchInput.value) {
-                const term = searchInput.value.toLowerCase();
-                const hasMatch = card.dataset.searchText.includes(term);
-                card.classList.toggle('hidden', !hasMatch);
+                card.classList.toggle('hidden', !UI.cardMatchesFilter(card, searchInput.value));
             }
         }
 
@@ -496,6 +510,9 @@ export const Actions = {
                 <div class="wb-export-header"><div class="wb-export-title">导出世界书为 TXT</div><div class="wb-export-close">×</div></div>
                 <div class="wb-export-section"><div class="wb-export-label">导出所有条目</div><div class="wb-export-grid"><button class="wb-export-btn" data-type="all-title">含标题</button><button class="wb-export-btn" data-type="all-no-title">不含标题</button></div></div>
                 <div class="wb-export-section"><div class="wb-export-label">仅导出已启用条目</div><div class="wb-export-grid"><button class="wb-export-btn" data-type="enabled-title">含标题</button><button class="wb-export-btn" data-type="enabled-no-title">不含标题</button></div></div>
+                <div class="wb-export-section">
+                    <label class="wb-export-tags-label"><input type="checkbox" class="wb-export-tags-toggle"> 在标题行附带词条标签（如 <code>#### 标题 #战斗 #世界观</code>）</label>
+                </div>
             </div>`;
         document.body.appendChild(overlay);
 
@@ -512,11 +529,14 @@ export const Actions = {
 
                 if (targetEntries.length === 0) return toastr.warning("没有符合条件的条目可导出");
                 const includeTitle = !type.includes('no-title');
+                const includeTags = includeTitle && !!overlay.querySelector('.wb-export-tags-toggle')?.checked;
                 let txtContent = "";
                 targetEntries.forEach(entry => {
                     const title = entry.comment || '无标题条目';
                     const content = entry.content || '';
-                    if (includeTitle) txtContent += `#### ${title}\n${content}\n\n`;
+                    const tags = includeTags ? getEntryTags(entry) : [];
+                    const tagSuffix = tags.length > 0 ? ` ${tags.map(tag => `#${tag}`).join(' ')}` : '';
+                    if (includeTitle) txtContent += `#### ${title}${tagSuffix}\n${content}\n\n`;
                     else txtContent += `${content}\n\n`;
                 });
 
@@ -638,5 +658,158 @@ export const Actions = {
         } else {
             UI.renderManageView();
         }
+    },
+
+    /* ============================================================
+     *  词条标签（Entry Tag）
+     * ============================================================ */
+
+    getEntryByUid(uid) {
+        return STATE.entries.find(e => Number(e.uid) === Number(uid)) || null;
+    },
+
+    /** 当前世界书内所有标签的使用统计，按次数降序 */
+    getEntryTagStats() {
+        return countEntryTags(STATE.entries);
+    },
+
+    /** 当前世界书内没有任何标签的词条数量 */
+    getUntaggedEntryCount() {
+        return countUntaggedEntries(STATE.entries);
+    },
+
+    /**
+     * 给某个词条添加标签（可一次输入多个，支持逗号分隔）
+     * @returns {Promise<{added: string[], duplicate: string[], overflow: string[]}|null>}
+     */
+    async addEntryTag(uid, rawInput) {
+        const entry = this.getEntryByUid(uid);
+        if (!entry) return null;
+
+        let result = { added: [], duplicate: [], overflow: [] };
+        this.updateEntry(uid, draft => { result = addEntryTags(draft, rawInput); });
+
+        if (result.added.length > 0) {
+            await this.flushPendingSave();
+            UI.refreshEntryTagViews && UI.refreshEntryTagViews();
+            if (result.overflow.length > 0) {
+                toastr.warning(`单条词条最多 ${MAX_TAGS_PER_ENTRY} 个标签，已忽略: ${result.overflow.join('、')}`);
+            }
+        }
+        return result;
+    },
+
+    /**
+     * 删除某个词条上的一个标签
+     * @returns {Promise<boolean>}
+     */
+    async removeEntryTag(uid, tag) {
+        const entry = this.getEntryByUid(uid);
+        if (!entry) return false;
+
+        let changed = false;
+        this.updateEntry(uid, draft => { changed = removeTagFromEntryObject(draft, tag); });
+        if (!changed) return false;
+
+        await this.flushPendingSave();
+        UI.refreshEntryTagViews && UI.refreshEntryTagViews();
+        return true;
+    },
+
+    /**
+     * 把当前世界书中的所有 oldTag 重命名为 newTag（已存在则自动合并去重）
+     * @returns {Promise<number>} 受影响的词条数量
+     */
+    async renameEntryTag(oldTag, newTag) {
+        const target = normalizeTagName(newTag);
+        if (!target || !STATE.currentBookName) return 0;
+
+        let changed = 0;
+        STATE.entries.forEach(entry => {
+            if (replaceEntryTag(entry, oldTag, target)) changed++;
+        });
+        if (changed === 0) return 0;
+
+        await API.saveBookEntries(STATE.currentBookName, STATE.entries);
+        UI.refreshEntryTagViews && UI.refreshEntryTagViews(true);
+        return changed;
+    },
+
+    /**
+     * 从当前世界书中彻底删除一个标签
+     * @returns {Promise<number>} 受影响的词条数量
+     */
+    async deleteEntryTag(tag) {
+        if (!STATE.currentBookName) return 0;
+
+        let changed = 0;
+        STATE.entries.forEach(entry => {
+            if (removeTagFromEntryObject(entry, tag)) changed++;
+        });
+        if (changed === 0) return 0;
+
+        await API.saveBookEntries(STATE.currentBookName, STATE.entries);
+        UI.refreshEntryTagViews && UI.refreshEntryTagViews(true);
+        return changed;
+    },
+
+    /**
+     * 给一批词条批量添加相同标签（用于「分组排序管理」中给筛选结果统一打标签）
+     * @param {number[]} uids
+     * @param {string} rawInput
+     * @returns {Promise<{changed: number, added: string[], duplicate: string[], overflow: number}>}
+     */
+    async batchAddEntryTag(uids, rawInput) {
+        const summary = { changed: 0, added: new Set(), duplicate: new Set(), overflow: 0 };
+        (uids || []).forEach(uid => {
+            const entry = this.getEntryByUid(uid);
+            if (!entry) return;
+            const res = addEntryTags(entry, rawInput);
+            res.added.forEach(tag => summary.added.add(tag));
+            res.duplicate.forEach(tag => summary.duplicate.add(tag));
+            summary.overflow += res.overflow.length;
+            if (res.added.length > 0) summary.changed++;
+        });
+
+        if (summary.changed > 0) {
+            await API.saveBookEntries(STATE.currentBookName, STATE.entries);
+            UI.refreshEntryTagViews && UI.refreshEntryTagViews(true);
+        }
+        return { ...summary, added: [...summary.added], duplicate: [...summary.duplicate] };
+    },
+
+    /**
+     * 在「标签筛选」状态下拖动排序时使用：
+     * 未显示的词条保持原有相对位置不变，只把筛选出来的词条按新的顺序填回它们原本占据的位置，
+     * 最后统一重排 order。这样既尊重用户拖动结果，又不会破坏被隐藏词条的顺序。
+     *
+     * @param {number[]} groupUids 该分组内全部词条的 uid（按当前 order 升序）
+     * @param {number[]} visibleUids 拖动后可见词条的新顺序
+     * @returns {number[]} 重排后该分组的 uid 顺序
+     */
+    applyVisibleOrder(groupUids, visibleUids) {
+        const byUid = new Map();
+        STATE.entries.forEach(entry => byUid.set(Number(entry.uid), entry));
+
+        const all = (groupUids || []).map(uid => byUid.get(Number(uid))).filter(Boolean);
+        const groupSet = new Set(all.map(entry => Number(entry.uid)));
+        const visibleSet = new Set((visibleUids || []).map(uid => Number(uid)));
+        const visibleEntries = [];
+        const usedVisible = new Set();
+        (visibleUids || []).forEach(uid => {
+            const key = Number(uid);
+            if (usedVisible.has(key) || !groupSet.has(key)) return;
+            const entry = byUid.get(key);
+            if (!entry) return;
+            usedVisible.add(key);
+            visibleEntries.push(entry);
+        });
+
+        let cursor = 0;
+        const merged = all.map(entry => (visibleSet.has(Number(entry.uid)) ? visibleEntries[cursor++] : entry));
+        while (cursor < visibleEntries.length) merged.push(visibleEntries[cursor++]);
+
+        merged.forEach((entry, index) => { entry.order = index + 1; });
+        return merged.map(entry => entry.uid);
     }
 };

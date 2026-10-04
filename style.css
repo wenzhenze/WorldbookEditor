@@ -3778,3 +3778,187 @@ body[data-theme="dark"] #enhanced-wb-panel-v6 #wb-manage-content.mode-custom .wb
     -moz-appearance: textfield !important;
     appearance: textfield !important;
 }
+
+/* ============================================================
+   词条标签（Entry Tag）
+   ============================================================ */
+
+/* --- 编辑器：词条卡片上的标签行 --- */
+#enhanced-wb-panel-v6 .wb-tag-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 5px 10px 7px 10px;
+    border-top: 1px dashed #eef0f3;
+    background: #fcfcfd;
+    font-size: 0.78em;
+}
+#enhanced-wb-panel-v6 .wb-tag-row.editing { background: #f7f4fd; }
+#enhanced-wb-panel-v6 .wb-tag-row-icon { color: #bfc5d0; font-size: 0.95em; }
+#enhanced-wb-panel-v6 .wb-card.wb-has-tags .wb-tag-row-icon { color: #7c5cbd; }
+#enhanced-wb-panel-v6 .wb-tag-chips {
+    display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+    flex: 1 1 auto; min-width: 0;
+}
+#enhanced-wb-panel-v6 .wb-tag-empty { color: #b9bfc9; font-style: italic; }
+#enhanced-wb-panel-v6 .wb-tag-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: #efe9fb; color: #6d4bb0; border: 1px solid #ded2f7;
+    border-radius: 10px; padding: 1px 4px 1px 8px;
+    cursor: pointer; line-height: 1.7; max-width: 100%;
+    transition: background 0.15s, border-color 0.15s;
+}
+#enhanced-wb-panel-v6 .wb-tag-chip:hover { background: #e6dcfa; border-color: #cbb6f5; }
+#enhanced-wb-panel-v6 .wb-tag-chip-text {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px;
+}
+#enhanced-wb-panel-v6 .wb-tag-remove {
+    font-size: 0.8em; padding: 1px 3px; border-radius: 50%; opacity: 0.5;
+}
+#enhanced-wb-panel-v6 .wb-tag-remove:hover { opacity: 1; color: #ef4444; background: rgba(239, 68, 68, 0.12); }
+#enhanced-wb-panel-v6 .wb-tag-add {
+    border: 1px dashed #cfd4dd; background: #fff; color: #6b7280;
+    border-radius: 10px; padding: 1px 8px; font-size: 1em; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 3px; line-height: 1.7;
+    transition: all 0.15s; flex-shrink: 0;
+}
+#enhanced-wb-panel-v6 .wb-tag-add:hover:not(:disabled) { border-color: #7c5cbd; color: #6d4bb0; background: #faf7ff; }
+#enhanced-wb-panel-v6 .wb-tag-add:disabled { opacity: 0.45; cursor: not-allowed; }
+#enhanced-wb-panel-v6 .wb-tag-input-wrap {
+    display: flex; align-items: center; gap: 4px; flex: 1 1 220px; min-width: 160px;
+}
+#enhanced-wb-panel-v6 .wb-tag-input-wrap.wb-hidden { display: none !important; }
+#enhanced-wb-panel-v6 .wb-tag-input {
+    flex: 1; height: 24px; font-size: 1em; padding: 0 8px;
+    border-radius: 8px; border: 1px solid #ded2f7; background: #fff; color: inherit;
+}
+#enhanced-wb-panel-v6 .wb-tag-input:focus { outline: none; border-color: #7c5cbd; box-shadow: 0 0 0 2px rgba(124, 92, 189, 0.15); }
+#enhanced-wb-panel-v6 .wb-tag-confirm,
+#enhanced-wb-panel-v6 .wb-tag-cancel {
+    height: 24px; width: 26px; border-radius: 8px; cursor: pointer;
+    border: 1px solid #e5e7eb; background: #fff; color: #6b7280;
+    display: inline-flex; align-items: center; justify-content: center;
+}
+#enhanced-wb-panel-v6 .wb-tag-confirm:hover { border-color: #7c5cbd; color: #6d4bb0; background: #faf7ff; }
+#enhanced-wb-panel-v6 .wb-tag-cancel:hover { border-color: #fca5a5; color: #dc2626; background: #fef2f2; }
+
+/* --- 「分组排序管理」弹窗：标签筛选条 --- */
+.wb-sort-filter {
+    flex-shrink: 0;
+    padding: 10px 15px 12px;
+    border-bottom: 1px solid #e5e7eb;
+    background: #f9fafb;
+    display: flex; flex-direction: column; gap: 8px;
+}
+.wb-sort-filter-head {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.85em;
+}
+.wb-sort-filter-title { font-weight: 700; color: #374151; display: inline-flex; align-items: center; gap: 5px; }
+.wb-sort-filter-stat { color: #9ca3af; font-size: 0.92em; }
+.wb-sort-filter-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wb-sort-mini-btn {
+    border: 1px solid #e5e7eb; background: #fff; color: #4b5563;
+    border-radius: 12px; padding: 3px 10px; font-size: 0.88em; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 4px; line-height: 1.6;
+    transition: all 0.15s; white-space: nowrap;
+}
+.wb-sort-mini-btn:hover { border-color: #c4b5fd; color: #6d28d9; background: #faf7ff; }
+.wb-sort-mini-btn.active { background: #7c5cbd; border-color: #7c5cbd; color: #fff; }
+.wb-sort-mini-btn.danger:hover { border-color: #fca5a5; color: #dc2626; background: #fef2f2; }
+.wb-sort-filter-chips {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    max-height: 96px; overflow-y: auto; padding-right: 2px;
+}
+.wb-sort-tag-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    border: 1px solid #e5e7eb; background: #fff; color: #4b5563;
+    border-radius: 12px; padding: 2px 8px; font-size: 0.82em; cursor: pointer;
+    user-select: none; transition: all 0.15s; white-space: nowrap; max-width: 100%;
+}
+.wb-sort-tag-chip:hover { border-color: #c4b5fd; background: #faf7ff; }
+.wb-sort-tag-chip.active {
+    background: #7c5cbd; border-color: #7c5cbd; color: #fff;
+    box-shadow: 0 1px 5px rgba(124, 92, 189, 0.35);
+}
+.wb-sort-tag-name { overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
+.wb-sort-tag-count {
+    font-size: 0.88em; opacity: 0.75; background: rgba(0, 0, 0, 0.06);
+    border-radius: 8px; padding: 0 5px;
+}
+.wb-sort-tag-chip.active .wb-sort-tag-count { background: rgba(255, 255, 255, 0.28); color: #fff; opacity: 1; }
+.wb-sort-tag-more { font-size: 0.8em; color: #6d28d9; cursor: pointer; align-self: center; text-decoration: underline; }
+.wb-sort-filter-empty { font-size: 0.82em; color: #9ca3af; }
+.wb-sort-filter-hint {
+    font-size: 0.8em; color: #6b7280; line-height: 1.6;
+    background: rgba(124, 92, 189, 0.08);
+    border: 1px solid rgba(124, 92, 189, 0.18);
+    border-radius: 8px; padding: 6px 10px; margin-bottom: 10px;
+    display: flex; gap: 6px; align-items: flex-start;
+}
+.wb-sort-empty { text-align: center; color: #9ca3af; padding: 32px 10px; line-height: 1.9; }
+.wb-sort-item-tags { display: flex; gap: 4px; flex-shrink: 0; max-width: 42%; overflow: hidden; }
+.wb-sort-item-tag {
+    font-size: 0.78em; background: #efe9fb; color: #6d4bb0;
+    border-radius: 8px; padding: 0 6px; white-space: nowrap;
+}
+
+/* --- 词条标签管理弹窗 --- */
+.wb-tagmgr-overlay { z-index: 26000; }
+.wb-tagmgr-summary { font-size: 0.82em; color: #6b7280; margin-bottom: 10px; }
+.wb-tagmgr-row {
+    display: flex; align-items: center; gap: 10px;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+    padding: 8px 12px; margin-bottom: 8px;
+}
+.wb-tagmgr-name { flex: 1; font-weight: 600; color: #6d4bb0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-tagmgr-count { font-size: 0.82em; color: #9ca3af; white-space: nowrap; }
+.wb-tagmgr-actions { display: flex; gap: 6px; }
+
+/* --- TXT 导出：标签选项 --- */
+.wb-export-tags-label {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; color: #6b7280; cursor: pointer; padding-left: 4px; line-height: 1.6;
+}
+.wb-export-tags-label input { width: auto; margin: 0; flex-shrink: 0; }
+.wb-export-tags-label code {
+    background: rgba(0, 0, 0, 0.06); padding: 1px 5px; border-radius: 4px; font-size: 0.92em;
+}
+
+/* --- 暗色主题 --- */
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-tag-row { background: #23252b; border-top-color: #34363d; }
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-tag-row.editing { background: #2b2540; }
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-tag-row-icon { color: #6b7280; }
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-card.wb-has-tags .wb-tag-row-icon { color: #a78bfa; }
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-tag-empty { color: #6b7280; }
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-tag-chip { background: #3a2f52; border-color: #4c3d6b; color: #cbb6f5; }
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-tag-chip:hover { background: #453868; border-color: #6d5a99; }
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-tag-add { background: #2a2c33; border-color: #4b5563; color: #9ca3af; }
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-tag-add:hover:not(:disabled) { background: #33294a; border-color: #7c5cbd; color: #cbb6f5; }
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-tag-input { background: #2a2c33; border-color: #4c3d6b; color: #e5e7eb; }
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-tag-confirm,
+[data-theme='dark'] #enhanced-wb-panel-v6 .wb-tag-cancel { background: #2a2c33; border-color: #4b5563; color: #9ca3af; }
+[data-theme='dark'] .wb-sort-filter { background: #23252b; border-bottom-color: #34363d; }
+[data-theme='dark'] .wb-sort-filter-title { color: #e5e7eb; }
+[data-theme='dark'] .wb-sort-filter-stat { color: #9ca3af; }
+[data-theme='dark'] .wb-sort-mini-btn { background: #2a2c33; border-color: #4b5563; color: #d1d5db; }
+[data-theme='dark'] .wb-sort-mini-btn:hover { background: #33294a; border-color: #7c5cbd; color: #cbb6f5; }
+[data-theme='dark'] .wb-sort-mini-btn.active { background: #7c5cbd; border-color: #7c5cbd; color: #fff; }
+[data-theme='dark'] .wb-sort-mini-btn.danger:hover { background: #3b1f24; border-color: #b91c1c; color: #fca5a5; }
+[data-theme='dark'] .wb-sort-tag-chip { background: #2a2c33; border-color: #4b5563; color: #d1d5db; }
+[data-theme='dark'] .wb-sort-tag-chip:hover { background: #33294a; border-color: #7c5cbd; }
+[data-theme='dark'] .wb-sort-tag-chip.active { background: #7c5cbd; border-color: #7c5cbd; color: #fff; }
+[data-theme='dark'] .wb-sort-tag-count { background: rgba(255, 255, 255, 0.12); }
+[data-theme='dark'] .wb-sort-tag-more { color: #a78bfa; }
+[data-theme='dark'] .wb-sort-filter-empty { color: #6b7280; }
+[data-theme='dark'] .wb-sort-filter-hint {
+    background: rgba(124, 92, 189, 0.16); border-color: rgba(124, 92, 189, 0.35); color: #cbd5e1;
+}
+[data-theme='dark'] .wb-sort-empty { color: #6b7280; }
+[data-theme='dark'] .wb-sort-item-tag { background: #3a2f52; color: #cbb6f5; }
+[data-theme='dark'] .wb-tagmgr-summary { color: #9ca3af; }
+[data-theme='dark'] .wb-tagmgr-row { background: #2a2c33; border-color: #3f4147; }
+[data-theme='dark'] .wb-tagmgr-name { color: #cbb6f5; }
+[data-theme='dark'] .wb-tagmgr-count { color: #9ca3af; }
+[data-theme='dark'] .wb-export-tags-label { color: #9ca3af; }
+[data-theme='dark'] .wb-export-tags-label code { background: rgba(255, 255, 255, 0.1); }

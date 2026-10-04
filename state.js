@@ -32,6 +32,12 @@ export const STATE = {
     manageTab: 'worldbook',
     manageExpandedGroups: new Set(),
 
+    // 「分组排序管理」弹窗中的词条标签筛选状态（仅在内存中保留，关闭面板即重置）
+    entryTagFilter: {
+        tags: [],       // 选中的标签，可包含 UNTAGGED_TOKEN
+        mode: 'any'     // 'any' = 任一标签命中；'all' = 同时满足全部标签
+    },
+
     boundBooksSet: {},
 
     bindings: {

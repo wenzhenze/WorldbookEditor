@@ -1,0 +1,13 @@
+{
+  "name": "worldbook-editor-tests",
+  "private": true,
+  "type": "module",
+  "description": "WorldbookEditor 插件自动化测试（jsdom 无头环境，模拟 SillyTavern 依赖）",
+  "scripts": {
+    "test": "node run-tests.mjs",
+    "preview": "node run-tests.mjs --preview"
+  },
+  "devDependencies": {
+    "jsdom": "^26.0.0"
+  }
+}

@@ -1,0 +1,6 @@
+# 测试夹具产物
+.harness/
+node_modules/
+package-lock.json
+preview-*.html
+*.log

@@ -4,6 +4,7 @@ import { getContext } from '../../../extensions.js';
 import { getCharaFilename } from '../../../utils.js';
 import { world_info, world_names, selected_world_info } from '../../../world-info.js';
 import { CONFIG, STATE } from './state.js';
+import { normalizeEntryTags } from './tags.js';
 import { logger } from './logger.js';
 
 /**
@@ -262,6 +263,8 @@ export const API = {
 
         const safeEntries = data.entries ? structuredClone(data.entries) : {};
         const entries = Object.values(safeEntries);
+        // 规范化词条标签（去重 / 去空白 / 兼容 extensions 中的旧数据）
+        entries.forEach(entry => normalizeEntryTags(entry));
         return entries.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     },
 
@@ -278,6 +281,7 @@ export const API = {
             const uid = entry.uid;
             const oldEntry = (oldData.entries && oldData.entries[uid]) ? oldData.entries[uid] : {};
             const safeEntry = structuredClone(entry);
+            normalizeEntryTags(safeEntry);
             newEntriesObj[uid] = { ...oldEntry, ...safeEntry };
         });
 

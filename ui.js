@@ -5,6 +5,24 @@ import { CONFIG, STATE, THEME_KEY, WI_POSITION_MAP, WI_POSITION_MAP_REV } from '
 import { API } from './api.js';
 import { Actions } from './actions.js';
 import { logger } from './logger.js';
+import {
+    TAG_SEP,
+    UNTAGGED_TOKEN,
+    UNTAGGED_LABEL,
+    MAX_TAGS_PER_ENTRY,
+    getEntryTags,
+    normalizeTagName,
+    entryMatchesTagFilter,
+    parseSearchQuery,
+    buildEntrySearchText,
+    buildEntryTagSearchText
+} from './tags.js';
+
+/** 转义 HTML 文本 */
+const escapeHtml = (str) => String(str ?? '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#039;' }[m]));
+
+/** 标签筛选条中最多直接展示多少个标签（超过则折叠） */
+const TAG_CHIP_DISPLAY_LIMIT = 60;
 
 export const UI = {
     // 防抖辅助函数
@@ -120,8 +138,8 @@ export const UI = {
                         </div>
                     </div>
                     <div class="wb-tool-bar">
-                        <input class="wb-input-dark" id="wb-search-entry" style="flex:1; width:100%; border-radius:15px; padding-left:15px;" placeholder="搜索条目...">
-                        <button class="wb-btn-circle interactable" id="btn-group-sort" title="分组排序管理"><i class="fa-solid fa-arrow-down-9-1"></i></button>
+                        <input class="wb-input-dark" id="wb-search-entry" style="flex:1; width:100%; border-radius:15px; padding-left:15px;" placeholder="搜索条目...（支持 #标签 语法）">
+                        <button class="wb-btn-circle interactable" id="btn-group-sort" title="分组排序管理" data-wb-tooltip="分组排序管理（支持按标签筛选）"><i class="fa-solid fa-arrow-down-9-1"></i></button>
                         <button class="wb-btn-circle" id="btn-sort-priority" title="列表按优先级重排"><i class="fa-solid fa-filter"></i></button>
                         <button class="wb-btn-circle" id="btn-add-entry" title="新建条目"><i class="fa-solid fa-plus"></i></button>
                     </div>
@@ -155,6 +173,11 @@ export const UI = {
             </div>
         `;
         document.body.appendChild(panel);
+
+        // 词条标签输入框的自动补全数据源（内容随当前世界书刷新）
+        const tagDatalist = document.createElement('datalist');
+        tagDatalist.id = 'wb-entry-tag-options';
+        panel.appendChild(tagDatalist);
 
         const $ = (sel) => panel.querySelector(sel);
         const $$ = (sel) => panel.querySelectorAll(sel);
@@ -941,35 +964,134 @@ export const UI = {
         }
     },
 
-    renderList(filterText = '') {
+    renderList(filterText = '', forceRebuild = false) {
         const list = document.getElementById('wb-entry-list');
         if (!list) return;
-        const term = filterText.toLowerCase();
+        const term = String(filterText ?? '');
 
-        // 首次渲染（list为空）或搜索词为空时，重建完整DOM
+        // 首次渲染（list为空）、搜索词为空或强制重建时，重建完整DOM
         const isFirstRender = list.children.length === 0;
-        const isClearSearch = term === '';
+        const isClearSearch = term.trim() === '';
 
-        if (isFirstRender || isClearSearch) {
+        if (forceRebuild || isFirstRender || isClearSearch) {
             list.innerHTML = '';
             STATE.entries.forEach((entry, index) => {
                 const card = this.createCard(entry, index);
-                // 添加可搜索的文本属性（包含所有可搜索内容）
-                const comment = entry.comment || '';
-                const content = entry.content || '';
-                card.dataset.searchText = `${comment} ${content}`.toLowerCase();
+                this.applyCardDatasets(card, entry);
                 list.appendChild(card);
                 this.applyCustomDropdown(`wb-pos-${entry.uid}`);
             });
-            return;
         }
 
-        // === 增量过滤：仅切换 hidden 类 ===
+        this.updateEntryTagDatalist();
+        this.applyEntryFilter(term);
+    },
+
+    /** 把词条的搜索缓存写入卡片 dataset */
+    applyCardDatasets(card, entry) {
+        if (!card) return;
+        card.dataset.searchText = buildEntrySearchText(entry);
+        card.dataset.tagList = buildEntryTagSearchText(entry);
+    },
+
+    /**
+     * 判断卡片是否命中搜索框内容（支持 `#标签` 语法）
+     * @param {HTMLElement} card
+     * @param {string} filterText
+     */
+    cardMatchesFilter(card, filterText) {
+        const { words, tags } = parseSearchQuery(filterText);
+        if (words.length === 0 && tags.length === 0) return true;
+
+        const searchText = card?.dataset?.searchText || '';
+        if (!words.every(word => searchText.includes(word))) return false;
+        if (tags.length === 0) return true;
+
+        const tagList = (card?.dataset?.tagList || '').split(TAG_SEP).filter(Boolean);
+        return tags.every(tag => tagList.some(item => item.includes(tag)));
+    },
+
+    /** 按搜索词切换卡片显隐（增量，不重建 DOM） */
+    applyEntryFilter(filterText = '') {
+        const list = document.getElementById('wb-entry-list');
+        if (!list) return;
+        const term = String(filterText ?? '').trim();
         Array.from(list.children).forEach(card => {
-            const searchText = card.dataset.searchText || '';
-            const hasMatch = searchText.includes(term);
-            card.classList.toggle('hidden', !hasMatch);
+            card.classList.toggle('hidden', term ? !this.cardMatchesFilter(card, term) : false);
         });
+    },
+
+    /** 刷新标签自动补全列表（数据源为当前世界书内已使用的标签） */
+    updateEntryTagDatalist() {
+        const datalist = document.getElementById('wb-entry-tag-options');
+        if (!datalist) return;
+        const stats = Actions.getEntryTagStats();
+        datalist.innerHTML = stats.map(item => `<option value="${escapeHtml(item.tag)}"></option>`).join('');
+    },
+
+    /** 标签变化后刷新编辑器视图内的所有标签展示 */
+    refreshEntryTagViews(forceRebuild = false) {
+        this.updateEntryTagDatalist();
+        if (forceRebuild) {
+            const searchInput = document.getElementById('wb-search-entry');
+            this.renderList(searchInput ? searchInput.value : '', true);
+            return;
+        }
+        const list = document.getElementById('wb-entry-list');
+        if (!list) return;
+        Array.from(list.children).forEach(card => {
+            const uid = Number(card.dataset.uid);
+            const entry = STATE.entries.find(e => Number(e.uid) === uid);
+            if (!entry) return;
+            this.applyCardDatasets(card, entry);
+            this.updateCardTags(uid);
+        });
+        const searchInput = document.getElementById('wb-search-entry');
+        if (searchInput && searchInput.value) this.applyEntryFilter(searchInput.value);
+    },
+
+    /**
+     * 生成词条卡片的标签行 HTML
+     * @param {object} entry
+     */
+    buildTagRowHtml(entry) {
+        const tags = getEntryTags(entry);
+        const chips = tags.map(tag => `
+            <span class="wb-tag-chip" data-tag="${escapeHtml(tag)}" title="点击按 #${escapeHtml(tag)} 筛选，点 × 移除">
+                <span class="wb-tag-chip-text">#${escapeHtml(tag)}</span>
+                <i class="fa-solid fa-xmark wb-tag-remove" title="移除标签"></i>
+            </span>`).join('');
+
+        const full = tags.length >= MAX_TAGS_PER_ENTRY;
+
+        return `
+            <div class="wb-tag-row">
+                <i class="fa-solid fa-tags wb-tag-row-icon" title="词条标签（随世界书一起保存）"></i>
+                <div class="wb-tag-chips">${chips || '<span class="wb-tag-empty">未打标签</span>'}</div>
+                <button class="wb-tag-add" title="${full ? `最多 ${MAX_TAGS_PER_ENTRY} 个标签` : '添加标签'}" ${full ? 'disabled' : ''}>
+                    <i class="fa-solid fa-plus"></i> 标签
+                </button>
+                <div class="wb-tag-input-wrap wb-hidden">
+                    <input type="text" class="wb-tag-input" list="wb-entry-tag-options" maxlength="120"
+                           placeholder="标签名，回车确认（可用逗号分隔多个）">
+                    <button class="wb-tag-confirm" title="确认"><i class="fa-solid fa-check"></i></button>
+                    <button class="wb-tag-cancel" title="取消"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+            </div>`;
+    },
+
+    /** 局部刷新某张卡片的标签行 */
+    updateCardTags(uid) {
+        const entry = STATE.entries.find(e => Number(e.uid) === Number(uid));
+        const card = document.querySelector(`.wb-card[data-uid="${uid}"]`);
+        if (!entry || !card) return;
+
+        const row = card.querySelector('.wb-tag-row');
+        if (!row) return;
+        // 关闭可能处于打开状态的输入框
+        row.outerHTML = this.buildTagRowHtml(entry);
+        this.applyCardDatasets(card, entry);
+        this.updateEntryTagDatalist();
     },
 
     createCard(entry, index) {
@@ -983,12 +1105,13 @@ export const UI = {
         let typeClass = '';
         if (isEnabled) typeClass = isConstant ? 'type-blue' : 'type-green';
 
-        card.className = `wb-card ${isEnabled ? '' : 'disabled'} ${typeClass}`;
+        card.className = `wb-card ${isEnabled ? '' : 'disabled'} ${typeClass}${getEntryTags(entry).length ? ' wb-has-tags' : ''}`;
         card.dataset.uid = entry.uid;
         card.dataset.index = index;
         card.draggable = false;
-        // 预计算搜索文本
-        card.dataset.searchText = `${entry.comment || ''} ${entry.content || ''}`.toLowerCase();
+        // 预计算搜索文本（含标签，renderList 会用最新数据覆盖）
+        card.dataset.searchText = buildEntrySearchText(entry);
+        card.dataset.tagList = buildEntryTagSearchText(entry);
 
         const escapeHtml = (str) => (str || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#039;'}[m]));
         const curPosInt = typeof entry.position === 'number' ? entry.position : 1;
@@ -1055,6 +1178,7 @@ export const UI = {
                     <i class="fa-solid fa-trash btn-delete" style="cursor:pointer!important;padding:5px!important;margin-left:5px!important;color:#6b7280!important;" title="删除条目"></i>
                 </div>
             </div>
+            ${this.buildTagRowHtml(entry)}
         `;
 
         // 为警告图标添加点击事件
@@ -1613,7 +1737,8 @@ export const UI = {
             'before_author_note': '作者注释之前', 'after_author_note': '作者注释之后', 'at_depth': '@D'
         };
 
-        const sortedEntries = [...STATE.entries].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || Number(a.uid) - Number(b.uid);
+        const sortedEntries = [...STATE.entries].sort(byOrder);
         sortedEntries.forEach(entry => {
             const posInt = typeof entry.position === 'number' ? entry.position : 1;
             const posStr = WI_POSITION_MAP[posInt] || 'after_character_definition';
@@ -1639,69 +1764,268 @@ export const UI = {
             return 0;
         });
 
+        // ===== 标签筛选状态（在弹窗内保留，重新打开时恢复） =====
+        if (!STATE.entryTagFilter) STATE.entryTagFilter = { tags: [], mode: 'any' };
+        const selectedTags = new Set(STATE.entryTagFilter.tags || []);
+        let filterMode = STATE.entryTagFilter.mode === 'all' ? 'all' : 'any';
+        let showAllChips = false;
+        const persistFilter = () => {
+            STATE.entryTagFilter = { tags: [...selectedTags], mode: filterMode };
+        };
+        const findSelectedTag = (tag) => {
+            if (tag === UNTAGGED_TOKEN) return selectedTags.has(UNTAGGED_TOKEN) ? UNTAGGED_TOKEN : null;
+            const lower = String(tag).toLowerCase();
+            for (const item of selectedTags) {
+                if (String(item).toLowerCase() === lower) return item;
+            }
+            return null;
+        };
+
         const overlay = document.createElement('div');
         overlay.className = 'wb-sort-modal-overlay';
-        overlay.innerHTML = `<div class="wb-sort-modal"><div class="wb-sort-header"><span><i class="fa-solid fa-arrow-down-9-1"></i> 分组排序管理</span><div style="cursor:pointer" id="wb-sort-close"><i class="fa-solid fa-xmark"></i></div></div><div class="wb-sort-body" id="wb-sort-body"></div><div class="wb-sort-footer" style="display:flex; justify-content:center; gap:15px;"><button class="wb-btn-rect" id="wb-sort-cancel" style="font-size:0.9em;padding:8px 20px; background:#fff; color:#000; border:1px solid #e5e7eb;">取消</button><button class="wb-btn-rect" id="wb-sort-save" style="font-size:0.9em;padding:8px 20px">保存</button></div></div>`;
+        overlay.innerHTML = `
+            <div class="wb-sort-modal">
+                <div class="wb-sort-header">
+                    <span><i class="fa-solid fa-arrow-down-9-1"></i> 分组排序管理</span>
+                    <div style="cursor:pointer" id="wb-sort-close"><i class="fa-solid fa-xmark"></i></div>
+                </div>
+                <div class="wb-sort-filter" id="wb-sort-filter">
+                    <div class="wb-sort-filter-head">
+                        <span class="wb-sort-filter-title"><i class="fa-solid fa-tags"></i> 按标签筛选</span>
+                        <span class="wb-sort-filter-stat" id="wb-sort-filter-stat"></span>
+                        <div class="wb-sort-filter-actions">
+                            <button class="wb-sort-mini-btn" id="wb-sort-mode-btn" title="切换匹配方式：任一标签命中 / 同时满足全部标签">任一满足</button>
+                            <button class="wb-sort-mini-btn" id="wb-sort-batch-tag" title="给当前筛选出的条目批量添加标签"><i class="fa-solid fa-layer-group"></i> 批量打标签</button>
+                            <button class="wb-sort-mini-btn" id="wb-sort-tag-manage" title="标签管理：重命名 / 合并 / 删除"><i class="fa-solid fa-gear"></i></button>
+                            <button class="wb-sort-mini-btn" id="wb-sort-filter-clear" title="清空标签筛选">清空</button>
+                        </div>
+                    </div>
+                    <div class="wb-sort-filter-chips" id="wb-sort-filter-chips"></div>
+                </div>
+                <div class="wb-sort-body" id="wb-sort-body"></div>
+                <div class="wb-sort-footer" style="display:flex; justify-content:center; gap:15px;">
+                    <button class="wb-btn-rect" id="wb-sort-cancel" style="font-size:0.9em;padding:8px 20px; background:#fff; color:#000; border:1px solid #e5e7eb;">取消</button>
+                    <button class="wb-btn-rect" id="wb-sort-save" style="font-size:0.9em;padding:8px 20px">保存</button>
+                </div>
+            </div>`;
         document.body.appendChild(overlay);
 
         const bodyEl = overlay.querySelector('#wb-sort-body');
+        const chipsEl = overlay.querySelector('#wb-sort-filter-chips');
+        const statEl = overlay.querySelector('#wb-sort-filter-stat');
+        const modeBtn = overlay.querySelector('#wb-sort-mode-btn');
+        const collapsedState = new Map();
         const isDark = () => document.body.getAttribute('data-theme') === 'dark';
         const getBg = (i) => isDark() ? `hsl(${(i * 137.5) % 360}, 20%, 18%)` : `hsl(${(i * 137.5) % 360}, 70%, 95%)`;
         const getBdr = (i) => isDark() ? `hsl(${(i * 137.5) % 360}, 40%, 28%)` : `hsl(${(i * 137.5) % 360}, 60%, 80%)`;
         const getTxt = (i) => isDark() ? `hsl(${(i * 137.5) % 360}, 80%, 85%)` : `hsl(${(i * 137.5) % 360}, 80%, 30%)`;
 
-        groupKeys.forEach((key, i) => {
-            const group = groups[key];
-            const container = document.createElement('div');
-            container.className = 'wb-sort-group-container';
-            container.style.backgroundColor = getBg(i);
-            container.style.borderColor = getBdr(i);
+        /** 渲染标签筛选条 */
+        const renderChips = () => {
+            const stats = Actions.getEntryTagStats();
+            const untagged = Actions.getUntaggedEntryCount();
 
-            container.innerHTML = `
-                <div class="wb-sort-group-title" style="color:${getTxt(i)}"><span>${group.label} <span style="font-weight:normal;font-size:0.8em;opacity:0.8">(${group.items.length})</span></span><i class="fa-solid fa-chevron-down wb-sort-arrow"></i></div>
-                <div class="wb-sort-group-list" data-group-key="${key}"></div>`;
+            // 清理已经不存在于当前世界书的筛选条件（例如标签被重命名或删除）
+            const available = new Set(stats.map(item => item.tag.toLowerCase()));
+            let pruned = false;
+            [...selectedTags].forEach(tag => {
+                if (tag === UNTAGGED_TOKEN) return;
+                if (!available.has(String(tag).toLowerCase())) {
+                    selectedTags.delete(tag);
+                    pruned = true;
+                }
+            });
+            if (pruned) persistFilter();
 
-            const titleEl = container.querySelector('.wb-sort-group-title');
-            const listEl = container.querySelector('.wb-sort-group-list');
+            const selectedCount = selectedTags.size;
 
-            titleEl.onclick = () => {
-                const isCollapsed = listEl.classList.contains('collapsed');
-                if (isCollapsed) { listEl.classList.remove('collapsed'); titleEl.classList.remove('collapsed'); } 
-                else { listEl.classList.add('collapsed'); titleEl.classList.add('collapsed'); }
-            };
+            modeBtn.textContent = filterMode === 'all' ? '全部满足' : '任一满足';
+            modeBtn.classList.toggle('active', selectedCount > 0);
+            statEl.textContent = selectedCount > 0
+                ? `已选 ${selectedCount} 个条件`
+                : `共 ${stats.length} 个标签 · ${STATE.entries.length} 个条目`;
 
-            const itemsHtml = group.items.map(entry => {
-                const safeTitle = (entry.comment || '无标题').replace(/&/g, '&amp;').replace(/</g, '&lt;');
-                return `
-                <div class="wb-sort-item" data-uid="${entry.uid}" data-group="${key}" draggable="true">
-                    <div class="wb-sort-item-order">${entry.order ?? 0}</div>
-                    <div style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none;">${safeTitle}</div>
-                    <div class="wb-sort-handle"><i class="fa-solid fa-bars" style="color:#ccc; pointer-events:none;"></i></div>
-                </div>`;
-            }).join('');
+            if (stats.length === 0 && untagged === 0) {
+                chipsEl.innerHTML = '<span class="wb-sort-filter-empty">当前世界书还没有任何词条标签 —— 先在编辑视图的条目卡片上点「+ 标签」吧</span>';
+                return;
+            }
 
-            listEl.innerHTML = itemsHtml;
-            this.initSortableGroup(listEl, key);
-            bodyEl.appendChild(container);
-        });
+            const shown = showAllChips ? stats : stats.slice(0, TAG_CHIP_DISPLAY_LIMIT);
+            let html = `
+                <span class="wb-sort-tag-chip ${findSelectedTag(UNTAGGED_TOKEN) ? 'active' : ''}" data-tag="${UNTAGGED_TOKEN}">
+                    <span class="wb-sort-tag-name">${UNTAGGED_LABEL}</span><span class="wb-sort-tag-count">${untagged}</span>
+                </span>`;
+            shown.forEach(item => {
+                html += `
+                <span class="wb-sort-tag-chip ${findSelectedTag(item.tag) ? 'active' : ''}" data-tag="${escapeHtml(item.tag)}" title="点击${findSelectedTag(item.tag) ? '取消' : ''}筛选 #${escapeHtml(item.tag)}">
+                    <span class="wb-sort-tag-name">#${escapeHtml(item.tag)}</span><span class="wb-sort-tag-count">${item.count}</span>
+                </span>`;
+            });
+            if (stats.length > TAG_CHIP_DISPLAY_LIMIT) {
+                html += `<span class="wb-sort-tag-more" data-more="1">${showAllChips ? '收起' : `显示全部 ${stats.length} 个标签`}</span>`;
+            }
+            chipsEl.innerHTML = html;
 
-        overlay.querySelector('#wb-sort-close').onclick = () => overlay.remove();
-        overlay.querySelector('#wb-sort-cancel').onclick = () => overlay.remove();
+            chipsEl.querySelectorAll('.wb-sort-tag-chip').forEach(chip => {
+                chip.onclick = () => {
+                    const tag = chip.dataset.tag;
+                    const existing = findSelectedTag(tag);
+                    if (existing) selectedTags.delete(existing);
+                    else selectedTags.add(tag);
+                    persistFilter();
+                    renderChips();
+                    renderGroups();
+                };
+            });
+            const moreBtn = chipsEl.querySelector('.wb-sort-tag-more');
+            if (moreBtn) moreBtn.onclick = () => { showAllChips = !showAllChips; renderChips(); };
+        };
+
+        /** 只调整被筛选出的条目之间的先后顺序（未显示的条目位置保持不变） */
+        const applyFilteredGroupOrder = (key, listEl) => {
+            const visibleUids = [...listEl.querySelectorAll('.wb-sort-item')].map(el => Number(el.dataset.uid));
+            const fullUids = [...groups[key].items].sort(byOrder).map(entry => Number(entry.uid));
+            Actions.applyVisibleOrder(fullUids, visibleUids);
+            groups[key].items.sort(byOrder);
+            [...listEl.querySelectorAll('.wb-sort-item')].forEach(el => {
+                const entry = STATE.entries.find(e => Number(e.uid) === Number(el.dataset.uid));
+                if (entry) el.querySelector('.wb-sort-item-order').textContent = entry.order ?? 0;
+            });
+        };
+
+        /** 根据标签筛选结果重建分组列表 */
+        const renderGroups = () => {
+            const filterActive = selectedTags.size > 0;
+
+            // 记录当前折叠状态
+            bodyEl.querySelectorAll('.wb-sort-group-list').forEach(listEl => {
+                const key = listEl.dataset.groupKey;
+                if (key) collapsedState.set(key, listEl.classList.contains('collapsed'));
+            });
+
+            bodyEl.innerHTML = '';
+            let visibleTotal = 0;
+
+            groupKeys.forEach((key, i) => {
+                const group = groups[key];
+                const items = filterActive ? group.items.filter(entry => entryMatchesTagFilter(entry, selectedTags, filterMode)) : group.items;
+                if (items.length === 0) return;
+                visibleTotal += items.length;
+
+                const container = document.createElement('div');
+                container.className = 'wb-sort-group-container';
+                container.style.backgroundColor = getBg(i);
+                container.style.borderColor = getBdr(i);
+
+                const countLabel = filterActive && items.length !== group.items.length
+                    ? `${items.length}/${group.items.length}`
+                    : `${items.length}`;
+                const collapsed = collapsedState.get(key) === true;
+
+                container.innerHTML = `
+                    <div class="wb-sort-group-title ${collapsed ? 'collapsed' : ''}" style="color:${getTxt(i)}"><span>${group.label} <span style="font-weight:normal;font-size:0.8em;opacity:0.8">(${countLabel})</span></span><i class="fa-solid fa-chevron-down wb-sort-arrow"></i></div>
+                    <div class="wb-sort-group-list ${collapsed ? 'collapsed' : ''}" data-group-key="${key}"></div>`;
+
+                const titleEl = container.querySelector('.wb-sort-group-title');
+                const listEl = container.querySelector('.wb-sort-group-list');
+
+                titleEl.onclick = () => {
+                    const isCollapsed = listEl.classList.contains('collapsed');
+                    collapsedState.set(key, !isCollapsed);
+                    if (isCollapsed) { listEl.classList.remove('collapsed'); titleEl.classList.remove('collapsed'); }
+                    else { listEl.classList.add('collapsed'); titleEl.classList.add('collapsed'); }
+                };
+
+                listEl.innerHTML = items.map(entry => {
+                    const safeTitle = escapeHtml(entry.comment || '无标题');
+                    const tagsHtml = getEntryTags(entry)
+                        .map(tag => `<span class="wb-sort-item-tag">#${escapeHtml(tag)}</span>`)
+                        .join('');
+                    return `
+                    <div class="wb-sort-item" data-uid="${entry.uid}" data-group="${key}" draggable="true">
+                        <div class="wb-sort-item-order">${entry.order ?? 0}</div>
+                        <div style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none;">${safeTitle}</div>
+                        <div class="wb-sort-item-tags">${tagsHtml}</div>
+                        <div class="wb-sort-handle"><i class="fa-solid fa-bars" style="color:#ccc; pointer-events:none;"></i></div>
+                    </div>`;
+                }).join('');
+
+                this.initSortableGroup(listEl, key, filterActive ? () => applyFilteredGroupOrder(key, listEl) : null);
+                bodyEl.appendChild(container);
+            });
+
+            if (filterActive) {
+                if (visibleTotal === 0) {
+                    bodyEl.innerHTML = `<div class="wb-sort-empty">没有符合当前标签筛选条件的条目<br><span style="font-size:0.9em">试试取消部分标签，或点击「清空」查看全部</span></div>`;
+                } else {
+                    bodyEl.insertAdjacentHTML('afterbegin', `<div class="wb-sort-filter-hint"><i class="fa-solid fa-circle-info"></i> 已筛选出 ${visibleTotal} / ${STATE.entries.length} 个条目。筛选状态下的拖动只会调整这些条目彼此之间的先后顺序，未显示的条目位置保持不变。</div>`);
+                }
+            }
+        };
+
+        renderChips();
+        renderGroups();
+
+        modeBtn.onclick = () => {
+            filterMode = filterMode === 'all' ? 'any' : 'all';
+            persistFilter();
+            renderChips();
+            renderGroups();
+        };
+        overlay.querySelector('#wb-sort-filter-clear').onclick = () => {
+            selectedTags.clear();
+            persistFilter();
+            renderChips();
+            renderGroups();
+        };
+        overlay.querySelector('#wb-sort-batch-tag').onclick = async () => {
+            if (selectedTags.size === 0) return toastr.warning('请先点选标签进行筛选，再批量打标签');
+            const visibleUids = [...bodyEl.querySelectorAll('.wb-sort-item')].map(el => Number(el.dataset.uid));
+            if (visibleUids.length === 0) return toastr.warning('当前没有筛选出任何条目');
+            const input = prompt(`给当前筛选出的 ${visibleUids.length} 个条目添加标签（可用逗号分隔多个）:`);
+            if (!input || !input.trim()) return;
+            const res = await Actions.batchAddEntryTag(visibleUids, input);
+            if (res.changed === 0) toastr.warning('没有条目被修改（标签可能已存在或已达上限）');
+            else toastr.success(`已为 ${res.changed} 个条目添加标签: ${res.added.map(tag => `#${tag}`).join(' ')}`);
+            renderChips();
+            renderGroups();
+        };
+        overlay.querySelector('#wb-sort-tag-manage').onclick = () => {
+            this.openEntryTagManagerModal(() => {
+                renderChips();
+                renderGroups();
+            });
+        };
+
+        const closeModal = () => {
+            persistFilter();
+            overlay.remove();
+        };
+        overlay.querySelector('#wb-sort-close').onclick = closeModal;
+        overlay.querySelector('#wb-sort-cancel').onclick = () => {
+            persistFilter();
+            overlay.remove();
+        };
         overlay.querySelector('#wb-sort-save').onclick = async () => {
             await API.saveBookEntries(STATE.currentBookName, STATE.entries);
             Actions.sortByPriority();
+            persistFilter();
             overlay.remove();
         };
     },
 
-    initSortableGroup(listEl, groupKey) {
-        const updateOrder = () => {
+    initSortableGroup(listEl, groupKey, applyOrder = null) {
+        const defaultUpdateOrder = () => {
             [...listEl.querySelectorAll('.wb-sort-item')].forEach((el, idx) => {
                 const newOrder = idx + 1;
                 el.querySelector('.wb-sort-item-order').textContent = newOrder;
-                const entry = STATE.entries.find(e => e.uid === Number(el.dataset.uid));
+                const entry = STATE.entries.find(e => Number(e.uid) === Number(el.dataset.uid));
                 if (entry) { entry.order = newOrder; }
             });
+        };
+        const updateOrder = () => {
+            if (typeof applyOrder === 'function') applyOrder();
+            else defaultUpdateOrder();
         };
 
         listEl.addEventListener('dragstart', (e) => {
@@ -1796,6 +2120,84 @@ export const UI = {
 
         listEl.addEventListener('touchend', endDrag);
         listEl.addEventListener('touchcancel', endDrag);
+    },
+
+    /**
+     * 词条标签管理：重命名 / 合并 / 删除当前世界书内的标签
+     * @param {Function} [onChanged] 标签发生变化后的回调（用于刷新标签筛选条）
+     */
+    openEntryTagManagerModal(onChanged = null) {
+        if (!STATE.currentBookName) return toastr.warning("请先选择一本世界书");
+
+        const overlay = document.createElement('div');
+        overlay.className = 'wb-sort-modal-overlay wb-tagmgr-overlay';
+        overlay.innerHTML = `
+            <div class="wb-sort-modal" style="width:520px;">
+                <div class="wb-sort-header">
+                    <span><i class="fa-solid fa-tags"></i> 词条标签管理</span>
+                    <div style="cursor:pointer" class="wb-tagmgr-close"><i class="fa-solid fa-xmark"></i></div>
+                </div>
+                <div class="wb-sort-body wb-tagmgr-body"></div>
+                <div class="wb-sort-footer" style="font-size:0.85em; line-height:1.6;">
+                    重命名会把所有词条上的旧标签改为新标签（同名自动合并）；删除会从所有词条上移除该标签。
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        this.setupModalPositioning(overlay.querySelector('.wb-sort-modal'), overlay);
+
+        const body = overlay.querySelector('.wb-tagmgr-body');
+
+        const render = () => {
+            const stats = Actions.getEntryTagStats();
+            const untagged = Actions.getUntaggedEntryCount();
+            const total = STATE.entries.length;
+
+            if (stats.length === 0) {
+                body.innerHTML = `<div class="wb-sort-empty">当前世界书还没有任何词条标签<br><span style="font-size:0.9em">在编辑视图的条目卡片上点「+ 标签」即可添加</span></div>`;
+                return;
+            }
+
+            let html = `<div class="wb-tagmgr-summary">共 ${stats.length} 个标签 · ${total} 个条目（其中 ${untagged} 个未打标签）</div>`;
+            html += stats.map(item => `
+                <div class="wb-tagmgr-row" data-tag="${escapeHtml(item.tag)}">
+                    <span class="wb-tagmgr-name" title="${escapeHtml(item.tag)}">#${escapeHtml(item.tag)}</span>
+                    <span class="wb-tagmgr-count">${item.count} 个条目</span>
+                    <span class="wb-tagmgr-actions">
+                        <button class="wb-sort-mini-btn" data-act="rename"><i class="fa-solid fa-pen"></i> 重命名</button>
+                        <button class="wb-sort-mini-btn danger" data-act="delete"><i class="fa-solid fa-trash"></i> 删除</button>
+                    </span>
+                </div>`).join('');
+            body.innerHTML = html;
+
+            body.querySelectorAll('.wb-tagmgr-row').forEach(row => {
+                const tag = row.dataset.tag;
+
+                row.querySelector('[data-act="rename"]').onclick = async () => {
+                    const next = prompt(`把标签 "#${tag}" 重命名为：`, tag);
+                    if (next === null) return;
+                    const target = normalizeTagName(next);
+                    if (!target || target === tag) return;
+                    const changed = await Actions.renameEntryTag(tag, target);
+                    toastr.success(changed ? `已在 ${changed} 个词条上把 #${tag} 改为 #${target}` : '没有需要修改的词条');
+                    render();
+                    if (onChanged) onChanged();
+                };
+
+                row.querySelector('[data-act="delete"]').onclick = async () => {
+                    if (!confirm(`确定要从所有词条上删除标签 "#${tag}" 吗？`)) return;
+                    const changed = await Actions.deleteEntryTag(tag);
+                    toastr.success(changed ? `已从 ${changed} 个词条上移除 #${tag}` : '没有需要修改的词条');
+                    render();
+                    if (onChanged) onChanged();
+                };
+            });
+        };
+
+        render();
+
+        const close = () => overlay.remove();
+        overlay.querySelector('.wb-tagmgr-close').onclick = close;
+        overlay.onclick = (e) => { if (e.target === overlay) close(); };
     },
 
     openAnalysisModal() {
@@ -2926,6 +3328,51 @@ export const UI = {
             if (!card) return;
             const uid = Number(card.dataset.uid);
 
+            // ---- 词条标签交互 ----
+            const tagRow = e.target.closest('.wb-tag-row');
+            if (tagRow) {
+                if (e.target.closest('.wb-tag-remove')) {
+                    e.stopPropagation();
+                    const chip = e.target.closest('.wb-tag-chip');
+                    if (chip) {
+                        const tag = chip.dataset.tag;
+                        Actions.removeEntryTag(uid, tag).then(removed => {
+                            if (removed) toastr.success(`已移除标签 #${tag}`);
+                        });
+                    }
+                    return;
+                }
+                if (e.target.closest('.wb-tag-chip')) {
+                    e.stopPropagation();
+                    const chip = e.target.closest('.wb-tag-chip');
+                    const searchInput = document.getElementById('wb-search-entry');
+                    if (chip && searchInput) {
+                        searchInput.value = `#${chip.dataset.tag}`;
+                        this.renderList(searchInput.value);
+                    }
+                    return;
+                }
+                if (e.target.closest('.wb-tag-add')) {
+                    e.stopPropagation();
+                    this.openTagEditor(tagRow);
+                    return;
+                }
+                if (e.target.closest('.wb-tag-confirm')) {
+                    e.stopPropagation();
+                    this.commitTagInput(tagRow);
+                    return;
+                }
+                if (e.target.closest('.wb-tag-cancel')) {
+                    e.stopPropagation();
+                    const input = tagRow.querySelector('.wb-tag-input');
+                    if (input) input.dataset.cancelled = '1';
+                    this.closeTagEditor(tagRow);
+                    return;
+                }
+                // 标签行内的其它点击（例如输入框）不触发卡片操作
+                if (e.target.closest('.wb-tag-input-wrap')) return;
+            }
+
             if (e.target.classList.contains('btn-delete')) {
                 if (confirm("确定要删除此条目吗？")) {
                     Actions.deleteEntry(uid);
@@ -2935,6 +3382,84 @@ export const UI = {
                 if (entry) this.openContentPopup(entry, e.target);
             }
         });
+
+        // 标签输入框：回车确认 / ESC 取消
+        list.addEventListener('keydown', (e) => {
+            if (!e.target.classList || !e.target.classList.contains('wb-tag-input')) return;
+            const tagRow = e.target.closest('.wb-tag-row');
+            if (!tagRow) return;
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                this.commitTagInput(tagRow);
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                e.target.dataset.cancelled = '1';
+                this.closeTagEditor(tagRow);
+            }
+        });
+
+        // 标签输入框失焦时自动提交（ESC 取消的除外）
+        list.addEventListener('focusout', (e) => {
+            const input = e.target;
+            if (!input.classList || !input.classList.contains('wb-tag-input')) return;
+            if (input.dataset.done === '1' || input.dataset.cancelled === '1') return;
+            const tagRow = input.closest('.wb-tag-row');
+            if (tagRow) this.commitTagInput(tagRow);
+        });
+    },
+
+    /** 展开某张卡片的标签输入框 */
+    openTagEditor(tagRow) {
+        if (!tagRow) return;
+        const wrap = tagRow.querySelector('.wb-tag-input-wrap');
+        const input = tagRow.querySelector('.wb-tag-input');
+        if (!wrap || !input) return;
+
+        // 收起其它卡片上已展开的输入框
+        document.querySelectorAll('#wb-entry-list .wb-tag-row.editing').forEach(row => {
+            if (row !== tagRow) this.closeTagEditor(row);
+        });
+
+        delete input.dataset.done;
+        delete input.dataset.cancelled;
+        input.value = '';
+        wrap.classList.remove('wb-hidden');
+        tagRow.classList.add('editing');
+        input.focus();
+    },
+
+    /** 收起标签输入框 */
+    closeTagEditor(tagRow) {
+        if (!tagRow) return;
+        const wrap = tagRow.querySelector('.wb-tag-input-wrap');
+        if (wrap) wrap.classList.add('wb-hidden');
+        tagRow.classList.remove('editing');
+    },
+
+    /** 提交标签输入框内容 */
+    async commitTagInput(tagRow) {
+        if (!tagRow) return;
+        const input = tagRow.querySelector('.wb-tag-input');
+        if (!input) return;
+
+        const value = input.value;
+        input.dataset.done = '1';
+
+        const card = tagRow.closest('.wb-card');
+        const uid = card ? Number(card.dataset.uid) : null;
+        this.closeTagEditor(tagRow);
+
+        if (uid === null || !String(value).trim()) return;
+
+        const result = await Actions.addEntryTag(uid, value);
+        if (!result) return;
+        if (result.added.length > 0) {
+            toastr.success(`已添加标签: ${result.added.map(tag => `#${tag}`).join(' ')}`);
+        } else if (result.duplicate.length > 0) {
+            toastr.warning(`标签已存在: ${result.duplicate.map(tag => `#${tag}`).join(' ')}`);
+        }
     }
 };
 
